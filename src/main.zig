@@ -20,19 +20,14 @@ pub fn main() !void {
     }
 }
 
-const Token = struct {
-    t: Type,
-    start: usize,
-    end: usize,
-    data: []const u8,
+const TokenType = enum {
+    identifier,
+    operator,
+    left_paren,
+    right_paren,
+    number,
 
-    const Type = enum {
-        identifier,
-        operator,
-        number,
-    };
-
-    pub fn typeFromChar(c: u8) ?Type {
+    pub fn fromChar(c: u8) ?TokenType {
         if (!std.ascii.isAscii(c) or !std.ascii.isPrint(c) or std.ascii.isWhitespace(c)) {
             // Non-ASCII, non-printable, or whitespace characters are not valid
             return null;
@@ -40,9 +35,54 @@ const Token = struct {
             return .identifier;
         } else if (std.ascii.isDigit(c)) {
             return .number;
+        } else if (c == '(') {
+            return .left_paren;
+        } else if (c == ')') {
+            return .right_paren;
         }
         return .operator;
     }
+};
+
+const Operator = enum {
+    add, // Add
+    sub, // Subtract
+    mul, // Multiply
+    div, // Divide
+    exp, // Exponent
+
+    const Assoc = enum { left, right };
+
+    /// Get precedence of operator
+    pub fn prec(self: Operator) u8 {
+        return switch (self) {
+            .add, .sub => 2,
+            .mul, .div => 3,
+            .exp => 4,
+        };
+    }
+    // Get associativity of operator
+    pub fn assoc(self: Operator) Assoc {
+        return switch (self) {
+            .exp => .right,
+            _ => .left,
+        };
+    }
+};
+
+const Lexeme = union(TokenType) {
+    identifier: []const u8,
+    operator: Operator,
+    left_paren,
+    right_paren,
+    number: u32,
+};
+
+const Token = struct {
+    t: TokenType,
+    start: usize,
+    end: usize,
+    data: []const u8,
 };
 
 const TokenIterator = struct {
@@ -62,11 +102,11 @@ const TokenIterator = struct {
         if (self.index >= self.data.len) return null;
         // Find start of next token
         const token_type = blk: {
-            var t = Token.typeFromChar(self.data[self.index]);
+            var t = TokenType.fromChar(self.data[self.index]);
             while (t == null) {
                 self.index += 1;
                 if (self.index >= self.data.len) return null;
-                t = Token.typeFromChar(self.data[self.index]);
+                t = TokenType.fromChar(self.data[self.index]);
             }
             break :blk t;
         } orelse unreachable; // TODO: I think this is a little hacky
@@ -86,7 +126,7 @@ const TokenIterator = struct {
                 };
             }
             // Operators are single-character
-            if (token_type == .operator or Token.typeFromChar(self.data[token_end]) != token_type) {
+            if (token_type == .operator or token_type == .left_paren or token_type == .right_paren or TokenType.fromChar(self.data[token_end]) != token_type) {
                 self.index = token_end;
                 return Token{
                     .t = token_type,
@@ -118,7 +158,7 @@ test "Token.next" {
         .data = "+",
     }, iter.next());
     try t.expectEqualDeep(Token{
-        .t = .operator,
+        .t = .left_paren,
         .start = 6,
         .end = 7,
         .data = "(",
@@ -142,7 +182,7 @@ test "Token.next" {
         .data = "cd",
     }, iter.next());
     try t.expectEqualDeep(Token{
-        .t = .operator,
+        .t = .right_paren,
         .start = 12,
         .end = 13,
         .data = ")",
