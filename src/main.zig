@@ -2,23 +2,117 @@ const std = @import("std");
 const print = std.debug.print;
 
 pub fn main() !void {
-    // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    // var args = try std.process.argsWithAllocator(gpa.allocator());
-    // defer args.deinit();
-    // _ = args.next(); // Skip argv[0]
-    //
-    // const expression = args.next() orelse {
-    //     return error.UsageError;
-    // };
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
-    const expression = "thing+(ab-cd)*ef";
+    const expression = "3+4*2/(1−5)^2^3";
 
     print("Expression: '{s}'\n", .{expression});
-    var iter = TokenIterator.new(expression);
-    while (iter.next()) |token| {
-        print("iter.next() -> '{s}'\n", .{token.data});
+    var iter = ShuntingYardIterator.new(
+        gpa.allocator(),
+        TokenIterator.new(expression),
+    );
+    while (iter.next()) |lexeme| {
+        print("\nget next\n", .{});
+        print("got: {}\n", .{lexeme});
     }
 }
+
+const Lexeme = union(TokenType) {
+    identifier: []const u8,
+    operator: Operator,
+    left_paren,
+    right_paren,
+    number: u32,
+
+    pub fn format(self: Lexeme, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
+        switch (self) {
+            .identifier => |s| return writer.print("identifier({s})", .{s}),
+            .operator => |op| return writer.print("operator({c})", .{@as(u8, switch (op) {
+                .add => '+',
+                .sub => '-',
+                .mul => '*',
+                .div => '/',
+                .exp => '^',
+            })}),
+            .left_paren => return writer.print("left_paren", .{}),
+            .right_paren => return writer.print("right_paren", .{}),
+            .number => |num| return writer.print("number({d})", .{num}),
+        }
+    }
+};
+
+const ShuntingYardIterator = struct {
+    tokens: TokenIterator,
+    allocator: std.mem.Allocator,
+    operator_stack: std.ArrayListUnmanaged(Lexeme),
+    output_queue: std.ArrayListUnmanaged(Lexeme),
+
+    const Self = @This();
+
+    fn new(allocator: std.mem.Allocator, tokens: TokenIterator) Self {
+        return Self{
+            .tokens = tokens,
+            .allocator = allocator,
+            .operator_stack = std.ArrayListUnmanaged(Lexeme){},
+            .output_queue = std.ArrayListUnmanaged(Lexeme){},
+        };
+    }
+
+    // fn next(self: *Self) ?Lexeme {
+    //     print("Shunt.next()\n", .{});
+    //
+    //     //const token = self.tokens.
+    // }
+
+    fn next(self: *Self) ?Lexeme {
+        print("Shunt.next()\n", .{});
+        // TODO: Return error union
+        while (true) {
+            const token = self.tokens.next() orelse {
+                // Drain operator stack
+                print("no operators left. draining op stack\n", .{});
+
+                const op = self.operator_stack.pop() orelse return null;
+                if (op == .left_paren) unreachable;
+                return op;
+            };
+
+            return switch (token.t) {
+                .identifier => Lexeme{ .identifier = token.data },
+                // TODO: I could change the base to 0 to automatically handle different bases
+                .number => Lexeme{ .number = std.fmt.parseInt(u32, token.data, 10) catch unreachable },
+                .operator => {
+                    const op1 = Operator.fromChar(token.data[0]) catch unreachable;
+                    if (self.operator_stack.items.len <= 0) return Lexeme{ .operator = op1 };
+
+                    switch (self.operator_stack.items[self.operator_stack.items.len - 1]) {
+                        .left_paren => return Lexeme{ .operator = op1 },
+                        .operator => |op2| {
+                            // (o2 has greater precedence than o1) or (o1 and o2 have the same precedence and o1 is left-associative)
+                            // - normalize ->
+                            // (o2.prec > o1.prec) or (o1.prec == o2.prec and o1.assoc == left)
+                            // - invert ->
+                            // (o2.prec <= o1.prec) and (o1.prec != o2.prec or o1.assoc == right)
+                            // if ((op2.prec() <= op1.prec()) and (op1.prec() != op2.prec() or op1.assoc() != .right)) {
+                            //     return Lexeme{ .operator = op1 };
+                            // }
+                            if ((op2.prec() > op1.prec()) or (op1.prec() == op2.prec() and op1.assoc() == .right)) {
+                                return Lexeme{ .operator = op1 };
+                            }
+                            _ = self.operator_stack.pop();
+                            return Lexeme{ .operator = op2 };
+                        },
+                        else => unreachable,
+                    }
+                },
+                .left_paren => Lexeme.left_paren,
+                .right_paren => Lexeme.right_paren,
+            };
+        }
+    }
+};
 
 const TokenType = enum {
     identifier,
@@ -53,6 +147,17 @@ const Operator = enum {
 
     const Assoc = enum { left, right };
 
+    pub fn fromChar(c: u8) !Operator {
+        return switch (c) {
+            '+' => .add,
+            '-' => .sub,
+            '*' => .mul,
+            '/' => .div,
+            '^' => .exp,
+            else => error.InvalidOperatorChar,
+        };
+    }
+
     /// Get precedence of operator
     pub fn prec(self: Operator) u8 {
         return switch (self) {
@@ -65,17 +170,9 @@ const Operator = enum {
     pub fn assoc(self: Operator) Assoc {
         return switch (self) {
             .exp => .right,
-            _ => .left,
+            else => .left,
         };
     }
-};
-
-const Lexeme = union(TokenType) {
-    identifier: []const u8,
-    operator: Operator,
-    left_paren,
-    right_paren,
-    number: u32,
 };
 
 const Token = struct {
