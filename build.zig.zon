@@ -1,7 +1,7 @@
 .{
     .name = .math,
     .version = "0.0.0",
-    .fingerprint = 0x971d886e882d5350, // Changing this has security and trust implications.
+    .fingerprint = 0xa927044d123c4467, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.1",
     .paths = .{
         "build.zig",

@@ -2,7 +2,7 @@ const std = @import("std");
 const print = std.debug.print;
 
 pub fn main() !void {
-    // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     // var args = try std.process.argsWithAllocator(gpa.allocator());
     // defer args.deinit();
     // _ = args.next(); // Skip argv[0]
@@ -11,12 +11,15 @@ pub fn main() !void {
     //     return error.UsageError;
     // };
 
-    const expression = "thing+(ab-cd)*ef";
+    const expression = "   thing+ (ab   -cd) *   ef    ";
 
     print("Expression: '{s}'\n", .{expression});
-    var iter = TokenIterator.new(expression);
+    const expr_reader = std.Io.Reader.fixed(expression);
+    var iter = TokenIterator.init(gpa.allocator(), expr_reader);
+    defer iter.deinit();
+
     while (iter.next()) |token| {
-        print("iter.next() -> '{s}'\n", .{token.data});
+        print("iter.next() -> '{s}' ({t})\n", .{ token.data, token.t });
     }
 }
 
@@ -80,59 +83,59 @@ const Lexeme = union(TokenType) {
 
 const Token = struct {
     t: TokenType,
-    start: usize,
-    end: usize,
     data: []const u8,
 };
 
 const TokenIterator = struct {
-    data: []const u8,
-    index: usize,
+    reader: std.Io.Reader,
+    arena: std.heap.ArenaAllocator,
 
     const Self = @This();
 
-    pub fn new(data: []const u8) Self {
+    pub fn init(gpa: std.mem.Allocator, r: std.Io.Reader) Self {
         return TokenIterator{
-            .data = data,
-            .index = 0,
+            .reader = r,
+            .arena = std.heap.ArenaAllocator.init(gpa),
         };
     }
 
+    pub fn deinit(self: *Self) void {
+        self.arena.deinit();
+    }
+
     pub fn next(self: *Self) ?Token {
-        if (self.index >= self.data.len) return null;
         // Find start of next token
         const token_type = blk: {
-            var t = TokenType.fromChar(self.data[self.index]);
+            var t = TokenType.fromChar(self.reader.peekByte() catch return null);
             while (t == null) {
-                self.index += 1;
-                if (self.index >= self.data.len) return null;
-                t = TokenType.fromChar(self.data[self.index]);
+                self.reader.toss(1);
+                t = TokenType.fromChar(self.reader.peekByte() catch return null);
             }
-            break :blk t;
-        } orelse unreachable; // TODO: I think this is a little hacky
+            break :blk t orelse return null; // TODO: I think this is a little hacky (orelse return null)
+        };
 
         // Find end of current token
-        const token_start = self.index;
-        var offset: u32 = 1;
-        while (true) : (offset += 1) {
-            const token_end = token_start + offset;
-            if (token_end >= self.data.len) {
-                self.index = token_end;
+        var token_len: u32 = 1;
+        while (true) : (token_len += 1) {
+            const token_plus = self.reader.peek(token_len + 1) catch {
+                const token_data = self.arena.allocator().dupe(
+                    u8,
+                    self.reader.take(token_len) catch @panic("Should be safe after the previous iteration's Reader.peek()"),
+                ) catch @panic("OOM");
                 return Token{
                     .t = token_type,
-                    .start = token_start,
-                    .end = token_end,
-                    .data = self.data[token_start..token_end],
+                    .data = token_data,
                 };
-            }
-            // Operators are single-character
-            if (token_type == .operator or token_type == .left_paren or token_type == .right_paren or TokenType.fromChar(self.data[token_end]) != token_type) {
-                self.index = token_end;
+            };
+
+            if (token_type == .operator or token_type == .left_paren or token_type == .right_paren or TokenType.fromChar(token_plus[token_plus.len - 1]) != token_type) {
+                const token_data = self.arena.allocator().dupe(
+                    u8,
+                    self.reader.take(token_len) catch @panic("Should be safe after the previous iteration's Reader.peek()"),
+                ) catch @panic("OOM");
                 return Token{
                     .t = token_type,
-                    .start = token_start,
-                    .end = token_end,
-                    .data = self.data[token_start..token_end],
+                    .data = token_data,
                 };
             }
         }
@@ -140,64 +143,47 @@ const TokenIterator = struct {
 };
 
 test "Token.next" {
-    const t = std.testing;
-    const expression = "thing+(ab-cd)*ef";
-    var iter = TokenIterator.new(expression);
-    try t.expectEqual(iter.data.ptr, expression.ptr);
-    try t.expectEqual(iter.index, 0);
-    try t.expectEqualDeep(Token{
+    const tst = std.testing;
+    const gpa = tst.allocator;
+
+    const expr_reader = std.Io.Reader.fixed(" thing  +(ab -   cd)*ef  ");
+    var iter = TokenIterator.init(gpa, expr_reader);
+    defer iter.deinit();
+    try tst.expectEqualDeep(Token{
         .t = .identifier,
-        .start = 0,
-        .end = 5,
         .data = "thing",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .operator,
-        .start = 5,
-        .end = 6,
         .data = "+",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .left_paren,
-        .start = 6,
-        .end = 7,
         .data = "(",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .identifier,
-        .start = 7,
-        .end = 9,
         .data = "ab",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .operator,
-        .start = 9,
-        .end = 10,
         .data = "-",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .identifier,
-        .start = 10,
-        .end = 12,
         .data = "cd",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .right_paren,
-        .start = 12,
-        .end = 13,
         .data = ")",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .operator,
-        .start = 13,
-        .end = 14,
         .data = "*",
     }, iter.next());
-    try t.expectEqualDeep(Token{
+    try tst.expectEqualDeep(Token{
         .t = .identifier,
-        .start = 14,
-        .end = 16,
         .data = "ef",
     }, iter.next());
-    try t.expectEqualDeep(null, iter.next());
+    try tst.expectEqualDeep(null, iter.next());
 }
